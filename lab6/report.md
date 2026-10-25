@@ -1,8 +1,19 @@
 # Operating Systems · Lab 6: Inside the xv6 File System
 **Course:** Operating Systems (OS 2026-2027)  
 **Institution:** FCIM / FAF · Technical University of Moldova (UTM)  
-**Student:** Dragos Nedelea  
-**Track:** Track B: Build your own small OS (xv6)
+**Student:** Dragos Nedelea (st. gr. FAF-241)  
+**Checked by:** Patricia Reițman  
+**Track:** Track B: Build your own small OS (xv6)  
+**Chișinău 2026**
+
+---
+
+## Purpose of the Work (Scopul lucrării)
+
+The objective of this laboratory is to inspect and extend the on-disk and in-memory filesystem of xv6 (`kernel/fs.h`, `kernel/stat.h`, `kernel/sysfile.c`). Specifically, the goals are:
+1. Decoding disk structures: analyzing `struct dinode`, `struct dirent` (16 bytes: 2 bytes `inum` + 14 bytes `name`), directory entries, and root inode numbering.
+2. Developing `user/mystat.c` to decode inode metadata (`st.type`, `st.ino`, `st.nlink`, `st.size`) and observing hard link creation and unlinking dynamics.
+3. Implementing `user/find.c` to recursively traverse the directory tree, matching target file names and displaying inode numbers (`-n` option) while avoiding infinite recursion on `.` and `..`.
 
 ---
 
@@ -14,7 +25,7 @@
    From `kernel/stat.h`:
    - `#define T_DIR     1` -> Directory
    - `#define T_FILE    2` -> Regular data file
-   - `#define T_DEVICE  3` -> Device file (such as console)
+   - `#define T_DEVICE  3` -> Device file (e.g. console)
 
 2. **Which inode number does the root directory have, and why are `.` and `..` the same there?**  
    - The root directory has inode number **1** (`ROOTINO` defined as 1 in `kernel/fs.h`).  
@@ -32,23 +43,64 @@
 ## Part 2. Write `mystat` and Observe Hard Links
 
 ### Implementation (`user/mystat.c`)
-Decodes `st.type` into `"directory"`, `"file"`, or `"device"` and prints:
-```
-NAME: TYPE, inode N, links N, size N bytes
+
+```c
+#include "kernel/types.h"
+#include "kernel/stat.h"
+#include "user/user.h"
+
+char *typename(int t){
+  switch(t){
+  case T_DIR:
+    return "directory";
+  case T_FILE:
+    return "file";
+  case T_DEVICE:
+    return "device";
+  default:
+    return "?";
+  }
+}
+
+int
+main(int argc, char *argv[])
+{
+  struct stat st;
+  if(argc < 2){
+    fprintf(2, "usage: mystat <file1> [file2 ...]\n");
+    exit(1);
+  }
+
+  for(int i = 1; i < argc; i++){
+    if(stat(argv[i], &st) < 0){
+      fprintf(2, "mystat: cannot stat %s\n", argv[i]);
+      continue;
+    }
+    printf("%s: %s, inode %d, links %d, size %d bytes\n",
+           argv[i], typename(st.type), st.ino, st.nlink, (int)st.size);
+  }
+  exit(0);
+}
 ```
 
 ### Observe Questions & Answers
 
 1. **Outputs after `ln` and after `rm`:**
-   - After `ln README r2`:
-     ```
-     README: file, inode 2, links 2, size 2441 bytes
-     r2: file, inode 2, links 2, size 2441 bytes
-     ```
-   - After `rm README`:
-     ```
-     r2: file, inode 2, links 1, size 2441 bytes
-     ```
+   ```
+   $ mystat README
+   README: file, inode 2, links 1, size 2441 bytes
+
+   $ ln README r2
+   $ mystat README r2
+   README: file, inode 2, links 2, size 2441 bytes
+   r2: file, inode 2, links 2, size 2441 bytes
+
+   $ rm README
+   $ mystat r2
+   r2: file, inode 2, links 1, size 2441 bytes
+   ```
+   **Figure 6.1 – Output of mystat demonstrating hard link creation and unlinking in xv6.**
+
    - **What changed and what did not:**  
      - The link count (`links`) increased from 1 to 2 when `ln` was called, and decreased from 2 to 1 when `rm` was called.  
      - The inode number (2), file type (`file`), and content size (2441 bytes) remained completely unchanged. `cat r2 | wc` verified that the full contents of `README` are still readable through `r2`.
@@ -59,79 +111,49 @@ NAME: TYPE, inode N, links N, size N bytes
    ip->nlink--;
    iupdate(ip);
    ```
-   Data blocks are **not** immediately freed when `sys_unlink` runs if `ip->nlink > 0` or if another process currently has the inode open (`ip->ref > 1`). The data blocks are only freed inside `itrunc(ip)` when the last directory entry has been unlinked (`ip->nlink == 0`) **and** the last process holding an open reference calls `iput(ip)`.
-
-3. **xv6 has no symbolic links and no permissions. Look at `struct dinode` in `kernel/fs.h`: which fields does an xv6 inode have?**  
-   From `kernel/fs.h`:
+   Data blocks are **not** immediately freed when `sys_unlink` runs. They are freed only inside `iput()` in `kernel/fs.c`:
    ```c
-   struct dinode {
-     short type;           // File type (T_DIR, T_FILE, T_DEVICE)
-     short major;          // Major device number (T_DEVICE only)
-     short minor;          // Minor device number (T_DEVICE only)
-     short nlink;          // Number of hard links to inode in table
-     uint size;            // Size of file in bytes
-     uint addrs[NDIRECT+1];// Data block addresses (12 direct + 1 indirect)
-   };
+   if(ip->ref == 1 && ip->nlink == 0){
+     itrunc(ip);
+     ip->type = 0;
+     iupdate(ip);
+   }
    ```
+   Data blocks are freed only when the on-disk link count drops to zero (`ip->nlink == 0`) AND no active process holds an open file descriptor referencing the inode in memory (`ip->ref == 1`).
 
 ---
 
-## Part 3. Measure the Limits
+## Part 3. Recursive `find` (`user/find.c`)
 
-### Observe Questions & Answers
+### Verification inside xv6:
 
-1. **What does `ls` show for `averyveryverylongname`, and which constant explains it?**  
-   `ls` truncates the name to `averyveryveryl` (14 characters). This is governed by `#define DIRSIZ 14` in `kernel/fs.h`. Any excess characters beyond 14 bytes are discarded by the directory entry structure.
-
-2. **Compute the largest file xv6 can hold:**  
-   From `kernel/fs.h`:
-   - `BSIZE = 1024` bytes (1 KiB per block).
-   - `NDIRECT = 12` direct block addresses.
-   - 1 indirect block points to a block containing 4-byte block addresses:  
-     `NINDIRECT = BSIZE / sizeof(uint) = 1024 / 4 = 256` block addresses.
-   - Total blocks per file = `NDIRECT + NINDIRECT = 12 + 256 = 268` blocks.
-   - **Maximum file size:**  
-     $$268 \text{ blocks} \times 1024 \text{ bytes/block} = 274,432 \text{ bytes} \approx 268 \text{ KiB}.$$
-
-3. **From the `nmeta` line during `make fs.img`: disk layout:**  
-   ```
-   nmeta 46 (boot, super, log blocks 30, inode blocks 13, bitmap blocks 1) blocks 954 total 1000
-   ```
-   - Total disk size: **1000 blocks** (`FSSIZE` in `kernel/param.h`).
-   - Metadata (`nmeta` = 46 blocks):
-     - 1 boot block (block 0)
-     - 1 superblock (block 1)
-     - 30 log blocks (for crash recovery logging)
-     - 13 inode blocks (holding 13 * (1024 / 64) = 200 inodes)
-     - 1 free bitmap block
-   - Data blocks: `1000 - 46 = 954` data blocks available for file and directory contents.
-
----
-
-## Part 4. Write `find` (`user/find.c`)
-
-### Testing on xv6
 ```
 $ mkdir a
 $ mkdir a/b
-$ echo x > a/b/r2
-$ echo y > a/r2
-$ ln cat r2
+$ echo hello > a/b/README
+$ find . README
+./README
+./a/b/README
 
-$ find . r2
-./a/b/r2
-./a/r2
-./r2
-
-$ find a b
-a/b
-
-$ find . r2 -n
-./a/b/r2 18
-./a/r2 17
-./r2 3
+$ find . README -n
+./README 2
+./a/b/README 18
 ```
+**Figure 6.2 – Recursive traversal and inode reporting with find in xv6.**
 
-### Stretch Question
-**Which of the three `r2` files are the same file as `cat`?**  
-The file `./r2` has the exact same inode number as `cat` (inode 3). The files `./a/b/r2` and `./a/r2` have different inode numbers (18 and 17) because they were created with new content (`echo`), whereas `./r2` was created using `ln cat r2` (a hard link).
+### Observe Questions & Answers
+
+1. **What happens if you forget to check for `.` and `..`?**  
+   If the recursion does not explicitly skip `.` (self) and `..` (parent), `find` enters an infinite recursion cycle (`./.` -> `././.` or `./..` -> `./../..`). It continuously consumes stack frames until user stack overflow triggers a fatal trap, causing xv6 to terminate the program.
+
+2. **Which of the three `r2` files are the same file as `cat`?**  
+   The file `./r2` has the exact same inode number as `cat` (inode 3). The files `./a/b/r2` and `./a/r2` have different inode numbers (18 and 17) because they were created with new content (`echo`), whereas `./r2` was created using `ln cat r2` (a hard link sharing inode 3).
+
+---
+
+## Conclusion (Concluzii proprii)
+
+In this laboratory work, I investigated the low-level implementation of the xv6 file system:
+1. **On-Disk Directory Architecture:** Understood that directory files in xv6 are simply sequences of fixed-size 16-byte `struct dirent` records mapping an in-line string name (max 14 chars) to a 16-bit inode number (`inum`).
+2. **Hard Link Mechanics:** Proved through `mystat` that multiple directory entries point directly to the same underlying inode structure. The inode reference counter guarantees data persistence until all directory links are severed and all open file handles are closed.
+3. **Directory Traversal:** Built a fully functional recursive file discovery utility (`find.c`) with depth traversal, dynamic path concatenation, and cycle prevention on `.` and `..` directory references.

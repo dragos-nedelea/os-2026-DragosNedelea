@@ -15,8 +15,8 @@ main(int argc, char *argv[])
     exit(1);
   }
 
-  if(sleep(ticks) < 0){
-    fprintf(2, "sleep: syscall failed\n");
+  if(pause(ticks) < 0){
+    fprintf(2, "sleep: pause failed\n");
     exit(1);
   }
 

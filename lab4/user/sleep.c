@@ -9,13 +9,6 @@ main(int argc, char *argv[])
     exit(1);
   }
 
-  // Compatible with both classic sleep() and post-August 2025 pause()
-#if defined(SYS_pause) || !defined(SYS_sleep)
-  // If user.h declared pause
   pause(atoi(argv[1]));
-#else
-  sleep(atoi(argv[1]));
-#endif
-
   exit(0);
 }

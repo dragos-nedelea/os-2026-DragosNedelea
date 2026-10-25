@@ -29,8 +29,8 @@ main(int argc, char *argv[])
       fprintf(2, "mystat: cannot stat %s\n", argv[i]);
       continue;
     }
-    printf("%s: %s, inode %d, links %d, size %l bytes\n",
-           argv[i], typename(st.type), st.ino, st.nlink, st.size);
+    printf("%s: %s, inode %d, links %d, size %d bytes\n",
+           argv[i], typename(st.type), st.ino, st.nlink, (int)st.size);
   }
   exit(0);
 }

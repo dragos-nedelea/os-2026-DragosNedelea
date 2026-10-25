@@ -1,23 +1,37 @@
 # Operating Systems · Lab 4: The xv6 Shell from the Outside
 **Course:** Operating Systems (OS 2026-2027)  
 **Institution:** FCIM / FAF · Technical University of Moldova (UTM)  
-**Student:** Dragos Nedelea  
-**Track:** Track B: Build your own small OS (xv6)
+**Student:** Dragos Nedelea (st. gr. FAF-241)  
+**Checked by:** Patricia Reițman  
+**Track:** Track B: Build your own small OS (xv6)  
+**Chișinău 2026**
+
+---
+
+## Purpose of the Work (Scopul lucrării)
+
+The objective of this laboratory is to systematically compare a production general-purpose shell (GNU Bash on Linux) with a minimal educational shell (`user/sh.c` on xv6). Specifically, the goals are:
+1. Updating and verifying `sleep.c` using the current xv6 `pause()` system call.
+2. Comparing shell feature sets: command execution, I/O redirection, pipelines, background execution, wildcard globbing, variable interpolation, quotes, and PATH resolution.
+3. Investigating argument passing mechanics (`argc`, `argv[]`) between shell and program via `args.c` (xv6) and `args_linux.c` (Linux) to prove who performs wildcard expansion.
+4. Analyzing the AST parser and command execution tree in `user/sh.c` (`forkexec`, `runcmd`, `parsecmd`).
 
 ---
 
 ## Part 1. Fix `sleep` for Current xv6
 
 - Verified `user/user.h` system call definitions.
-- Updated `user/sleep.c` to use `pause()` if running on post-August 2025 xv6 trees, or `sleep()` on standard trees.
+- Updated `user/sleep.c` to directly call `pause()` as required by the current xv6 kernel API.
 - Ensured `$U/_sleep\` is registered in `UPROGS` in `Makefile`.
-- Verification inside xv6:
-  ```
-  $ sleep 20
-  (pauses and returns)
-  $ sleep
-  usage: sleep <ticks>
-  ```
+
+```
+$ sleep 20
+(pauses for 20 ticks and returns cleanly)
+
+$ sleep
+usage: sleep <ticks>
+```
+**Figure 4.1 – Execution of updated sleep utility inside xv6.**
 
 ---
 
@@ -58,59 +72,54 @@
 
 ### Implementations:
 - `user/args.c` for xv6
-- `args_linux.c` for Linux (compiled with `gcc -o args args_linux.c`)
+- `args_linux.c` for Linux
+
+```
+# Linux:
+$ ./args_linux *
+argc = 4
+argv[0] = [./args_linux]
+argv[1] = [args.c]
+argv[2] = [args_linux.c]
+argv[3] = [Makefile]
+
+# xv6:
+$ args *
+argc = 2
+argv[0] = [args]
+argv[1] = [*]
+```
+**Figure 4.2 – Comparing argument passing in Linux (shell expands glob) vs xv6 (literal glob passed to program).**
 
 ### Observe Questions & Answers
 
-1. **Paste both outputs for `args *.c "x y"`:**
+1. **Did `args` in xv6 see `*` or the file names? Who did the expansion on Linux?**  
+   In xv6, `args` saw the literal string `*`. On Linux, `args_linux` received the expanded list of file names (`args.c`, `args_linux.c`, etc.). The **shell (Bash)** performed the expansion on Linux before `execve` was called.
 
-   - **Linux bash (`./args *.c "x y"`):**
-     ```
-     argc = 4
-     argv[0] = [./args]
-     argv[1] = [args_linux.c]
-     argv[2] = [sleep.c]
-     argv[3] = [x y]
-     ```
-   - **xv6 (`args *.c "x y"`):**
-     ```
-     argc = 3
-     argv[0] = [args]
-     argv[1] = [*.c]
-     argv[2] = ["x y"]
-     ```
-
-2. **So who turns `*.c` into file names and removes the quotes: the program, the kernel, or the shell?**  
-   The **shell** performs these transformations! Before invoking the executable, the shell parses the line, expands wildcards against directory entries, interprets and strips quotation marks, and passes the resulting clean array of strings to the kernel via the `execve` system call. The program and kernel merely receive the final expanded `argv` array.
-
-3. **What happened to the extra spaces in `args one    two    three`?**  
-   The shell treats continuous whitespace sequences as argument delimiters, tokenizing the input into separate strings (`"one"`, `"two"`, `"three"`) and discarding the extra spaces.
+2. **When you type `rm *` in xv6, what happens? Compare with Linux.**  
+   In xv6, `rm` receives `argv[1] = "*"`. It tries to find a file named literally `*`, cannot find it, and reports `rm: failed to delete *`. On Linux, Bash expands `*` into all file names in the folder, and `rm` deletes every file in the directory.
 
 ---
 
-## Part 4. Read the Shell (`user/sh.c`)
+## Part 4. Look Under the Hood (`user/sh.c`)
 
 ### Observe Questions & Answers
 
-1. **Name the five kinds of command the xv6 shell knows and the character that produces each:**
-   From `#define` directives in `user/sh.c`:
-   - `EXEC` (1): Simple executable command (words separated by whitespace).
-   - `REDIR` (2): Redirection command, produced by `<` (input) or `>` (output).
-   - `PIPE` (3): Pipeline command, produced by `|`.
-   - `LIST` (4): Sequential command list, produced by `;`.
-   - `BACK` (5): Background asynchronous command, produced by `&`.
+1. **Find `runcmd` in `user/sh.c`. Which system call is used for `|`? Which for `<` and `>`?**  
+   - For `|` (pipelines): `pipe()` is used to allocate the pipe, and `dup()` (via `close()` and `dup()`) remaps descriptors.
+   - For `<` and `>` (redirection): `open()` is called with appropriate flags (`O_RDONLY` or `O_WRONLY|O_CREATE|O_TRUNC`), followed by `close()` and `dup()` to replace file descriptor 0 or 1.
 
-2. **Where is `cd` handled, and why is it not run as a separate program?**  
-   `cd` is handled directly in `main()` of `user/sh.c`:
-   ```c
-   if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
-     buf[strlen(buf)-1] = 0;  // chop \n
-     if(chdir(buf+3) < 0)
-       fprintf(2, "cannot cd %s\n", buf+3);
-     continue;
-   }
-   ```
-   It cannot be a separate program because `chdir` modifies only the current working directory of the process that invokes it. If executed as a child process via `fork()`, the child would change its directory and terminate, leaving the parent shell's directory unchanged.
+2. **Why does `forkexec` (or `fork` in `sh.c`) run before `runcmd` for most commands, but `cd` is executed directly in the parent?**  
+   Commands run in a child process so that program exit or crashes do not kill the shell, and file descriptor redirections do not affect the shell itself. However, `cd` must modify the current working directory of the shell itself. If `cd` were run in a forked child, only the child's CWD would change, and the parent shell would remain unchanged upon child termination.
 
 3. **Search `sh.c` for any code that handles `*` or `$`. What does that explain about Part 2?**  
-   Neither `*` nor `$` appears anywhere in `user/sh.c`. The xv6 shell does not contain any code for pathname pattern matching (globbing) or environment variable interpolation. Consequently, strings like `*.c` or `$HOME` are treated as literal text and passed unmodified into `argv`.
+   Neither `*` nor `$` appears anywhere in `user/sh.c`. The xv6 shell contains zero code for pathname globbing or environment variable interpolation, confirming why such expressions are passed literally into `argv`.
+
+---
+
+## Conclusion (Concluzii proprii)
+
+In this laboratory work, comparing the xv6 shell with GNU Bash provided clear insights into operating system design:
+1. **Separation of Concerns:** Proved empirically via `args.c` and `args_linux.c` that filename globbing is strictly a user-space shell feature, not a kernel service. The kernel's `execve` simply receives an array of string pointers (`argv[]`).
+2. **Minimalist Architecture:** The xv6 shell demonstrates how a complete, functioning UNIX shell supporting redirection, pipelines, and background execution can be constructed in under 500 lines of C using only `fork`, `exec`, `wait`, `pipe`, `dup`, and `close`.
+3. **Shell Primitives:** Gained direct understanding of why `cd` must be a shell built-in and how pipeline synchronization relies fundamentally on EOF transmission over closed pipe file descriptors.

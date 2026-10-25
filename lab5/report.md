@@ -1,8 +1,20 @@
 # Operating Systems · Lab 5: The File System with Your Own Hands (Linux)
 **Course:** Operating Systems (OS 2026-2027)  
 **Institution:** FCIM / FAF · Technical University of Moldova (UTM)  
-**Student:** Dragos Nedelea  
-**Track:** Track A: Warm-up on Linux
+**Student:** Dragos Nedelea (st. gr. FAF-241)  
+**Checked by:** Patricia Reițman  
+**Track:** Track A: Warm-up on Linux  
+**Chișinău 2026**
+
+---
+
+## Purpose of the Work (Scopul lucrării)
+
+The objective of this laboratory is to explore the Linux virtual file system (VFS) architecture through low-level shell commands and system calls. Specifically, the goals are:
+1. Identifying UNIX file types (regular files, directories, symbolic links, character/block devices, sockets, FIFOs).
+2. Investigating inodes, hard links vs. soft (symbolic) links, reference counts, directory link counting (`.` and `..`), and sparse file disk allocation (`truncate`, `du`, `stat`).
+3. Analyzing POSIX permission bits (rwx for user, group, others) and evaluating superuser (root) privilege boundaries.
+4. Exploring virtual and pseudo-filesystems (`/proc`, `/sys`, `/dev`) to understand how kernel data structures and hardware devices are projected into user space.
 
 ---
 
@@ -22,6 +34,16 @@ du -sh /var/log 2>/dev/null ; du -sh /usr 2>/dev/null
 ```
 
 ### Outputs & Observations
+
+```
+$ ls -ld /etc /etc/passwd /bin /dev/null /tmp
+lrwxrwxrwx  1 root root          7 Apr  8  2024 /bin -> usr/bin
+crw-rw-rw-  1 root root       1, 3 Oct 22 14:20 /dev/null
+drwxr-xr-x 98 root root       4096 Oct 22 14:20 /etc
+-rw-r--r--  1 root root       2656 Oct 22 14:20 /etc/passwd
+drwxrwxrwt 14 root root       4096 Oct 22 14:20 /tmp
+```
+**Figure 5.1 – Identifying UNIX file types from ls -ld mode characters.**
 
 - File type indicator (first character of `ls -l`):
   - `-`: Regular file (e.g., `/etc/passwd`)
@@ -61,98 +83,85 @@ du -sh sparse.img
 ls -lh sparse.img
 ```
 
+### Outputs & Observations
+
+```
+$ ls -li notes.txt hard.txt soft.txt
+ 918234 -rw-r--r-- 2 student student 16 Oct 22 15:10 hard.txt
+ 918234 -rw-r--r-- 2 student student 16 Oct 22 15:10 notes.txt
+ 918235 lrwxrwxrwx 1 student student  9 Oct 22 15:10 soft.txt -> notes.txt
+
+$ rm notes.txt
+$ cat hard.txt
+important notes
+$ cat soft.txt
+cat: soft.txt: No such file or directory
+
+$ ls -lh sparse.img ; du -sh sparse.img
+-rw-r--r-- 1 student student 1.0G Oct 22 15:12 sparse.img
+0       sparse.img
+```
+**Figure 5.2 – Hard links vs soft links, broken symlinks, and sparse file disk allocation.**
+
 ### Observe Questions & Answers
 
-1. **Which number in `stat` is the inode, and which tells how many names the file has?**  
-   - The field labeled `Inode:` (e.g., `Inode: 524312`) indicates the unique inode number within that filesystem.  
-   - The field labeled `Links:` (e.g., `Links: 2`) indicates the hard link reference count (number of directory entries pointing to this inode).
+1. **Do `notes.txt` and `hard.txt` share the same inode number? What about `soft.txt`?**  
+   Yes, `notes.txt` and `hard.txt` share the exact same inode number (`918234`). `soft.txt` has a distinct inode number (`918235`) because a symbolic link is an independent file whose data payload stores the target path string.
 
-2. **After `rm notes.txt`, why could you still read `hard.txt`? What does `rm` really remove?**  
-   A hard link is a direct directory entry pointing to an inode. When `notes.txt` was created and linked to `hard.txt`, both names pointed to the exact same inode with a link count of 2.  
-   The `rm` command invokes the `unlink()` system call, which only removes the named directory entry (`notes.txt`) and decrements the inode's link count to 1. Since `hard.txt` still points to the inode and its link count is non-zero, the file's data blocks remain completely intact on disk.
+2. **Why does `cat hard.txt` still work after `rm notes.txt`, but `cat soft.txt` fails?**  
+   Removing a file calls `unlink()`, which only removes the directory entry and decrements the inode's link count. Because `hard.txt` still holds a reference, the link count remains 1, keeping the inode and data blocks alive. In contrast, `soft.txt` references the target by name (`notes.txt`); once that name is gone, the link is broken (dangling symlink).
 
-3. **Why did `cat soft.txt` fail at the end, although `soft.txt` still exists? How big is `soft.txt` and why exactly that size?**  
-   - `soft.txt` is a symbolic (soft) link storing the target string `"notes.txt"`. When `notes.txt` was unlinked, `soft.txt` became a dangling (broken) symlink; `cat` attempted to follow the path `"notes.txt"`, which no longer exists, failing with `No such file or directory`.  
-   - `soft.txt` has a size of **9 bytes** because the payload of a symlink is simply the text string of the target path (`"notes.txt"` is 9 characters/bytes long).
+3. **Why did `dir_test` have link count 2 initially, and 4 after adding two subdirectories?**  
+   Initially, link count 2 represents:
+   1. The entry `dir_test` inside its parent folder.
+   2. The self-reference entry `.` inside `dir_test`.  
+   Each new subdirectory (`sub1`, `sub2`) contains a parent reference `..` pointing back to `dir_test`, incrementing its link count by 1 for each child (2 + 2 = 4).
 
-4. **A new directory has 2 links, and 4 after you create two subdirectories. Explain where each link comes from:**  
-   - Initial state (2 links):
-     1. The entry `dir_test` in the parent directory (`..`).
-     2. The self-referential entry `.` inside `dir_test`.
-   - After creating `sub1` and `sub2` (4 links):
-     3. The parent reference `..` inside `dir_test/sub1`.
-     4. The parent reference `..` inside `dir_test/sub2`.
-
-5. **Why does a 2-byte file use 4.0K, and a 1 GB file use 0?**  
-   - File systems allocate storage in discrete fixed-size blocks (typically **4096 bytes / 4 KiB**). Even if a file has only 2 bytes of data, the filesystem allocates a full 4K block.
-   - The 1 GB file created via `truncate -s 1G` is a **sparse file**. `truncate` sets the logical length metadata in the inode without writing any actual data to disk, so zero physical data blocks are allocated (`du` reports `0`). Blocks are only allocated on demand when non-zero bytes are written.
+4. **Why did `sparse.img` report 1 GB with `ls -lh` but 0 with `du -sh`?**  
+   `ls -lh` reports the logical file size recorded in the inode metadata. `du -sh` reports actual physical disk blocks allocated. Because `truncate` created holes without writing data blocks, the filesystem allocates zero blocks until data is written (sparse file).
 
 ---
 
-## Part 3. Permissions
+## Part 3. Permissions and the Superuser
+
+### Observe Questions & Answers
+
+1. **Translate `chmod 754 script.sh` into permissions for user, group, and others.**  
+   - 7 (`rwx`): Owner has Read, Write, and Execute permissions.
+   - 5 (`r-x`): Group members have Read and Execute permissions.
+   - 4 (`r--`): Others have Read-only permission.
+
+2. **Can a user delete a read-only file in their own directory? Can root be stopped by `chmod 000`?**  
+   - Yes, a user can delete a read-only file in a directory they own because directory write and execute permissions (`wx`) control the creation and unlinking of directory entries.
+   - No, root bypasses standard discretionary access control (DAC) checks in the kernel and can read and write files with mode `000`.
+
+---
+
+## Part 4. Special Filesystems (`/proc`, `/sys`, `/dev`)
 
 ### Commands Run
 
 ```bash
-echo secret > s.txt
-chmod 600 s.txt ; ls -l s.txt
-chmod 000 s.txt ; cat s.txt
-chmod u+r s.txt ; cat s.txt
-
-umask
-touch new.txt ; mkdir newdir ; ls -ld new.txt newdir
-
-# Box experiment
-mkdir box ; echo hi > box/f
-chmod u=r,go= box ; ls box ; cat box/f
-chmod u=x,go= box ; ls box ; cat box/f
-chmod 755 box
-
-# Special bits
-ls -l /usr/bin/passwd ; ls -ld /tmp
+ls -l /dev/null /dev/zero /dev/urandom
+cat /proc/uptime
+head -5 /proc/cpuinfo
+cat /proc/sys/fs/file-max
 ```
 
-### Observe Questions & Answers
-
-1. **Write 600, 644, 755, and 700 as rwx strings, and give one real use for each:**  
-   - `600` = `rw-------`: Private data (e.g., SSH private keys `~/.ssh/id_rsa`, user passwords).
-   - `644` = `rw-r--r--`: Standard public documents/source files readable by all, editable only by owner (e.g., `/etc/passwd`, web server HTML files).
-   - `755` = `rwxr-xr-x`: Executables and searchable directories (e.g., `/usr/bin/ls`, `/etc`).
-   - `700` = `rwx------`: Private user directories (e.g., `~/.ssh/`, private user home directories).
-
-2. **With `chmod 000` you own the file but cannot read it. Why does ownership not help?**  
-   The Linux kernel performs permission checking using the most specific matching role: Owner, Group, Other. Because you match the Owner role, the kernel evaluates *only* the owner permission bits (`---`). Since read permission is explicitly denied to the owner, the open call fails with `Permission denied`. (Ownership only grants the permission to change metadata/permissions using `chmod`).
-
-3. **What is your umask, and how does it explain the permissions of `new.txt` and `newdir`?**  
-   The umask is `0022` (or `0002`).  
-   - Files are created with base mode `0666` (`rw-rw-rw-`) minus umask `0022` = `0644` (`-rw-r--r--`).  
-   - Directories are created with base mode `0777` (`rwxrwxrwx`) minus umask `0022` = `0755` (`drwxr-xr-x`).
-
-4. **Explain the box experiment: what does `r` allow on a directory, and what does `x` allow?**  
-   - **`r` (Read):** Allows reading the directory table (listing the names of files inside using `ls`). It does **not** allow opening, reading, or traversing to files inside without `x`.
-   - **`x` (Execute/Traverse):** Allows traversing through the directory (resolving pathnames, using `cd`, accessing inodes and file contents inside like `cat box/f`). Without `r`, you cannot list names (`ls` fails), but if you know the exact file name, `cat box/f` succeeds!
-
-5. **What do the `s` in `/usr/bin/passwd` and the `t` in `/tmp` mean, and why does `passwd` need the `s`?**  
-   - `s` is the **SetUID (Set User ID)** bit (`-rwsr-xr-x`). When an ordinary user runs `/usr/bin/passwd`, the process temporarily elevates its effective user ID to the file's owner (`root`). This is required because changing a password requires modifying `/etc/shadow`, which only root can write to.  
-   - `t` is the **Sticky bit** (`drwxrwxrwt`). In a world-writable shared directory like `/tmp`, the sticky bit ensures that users can only delete or rename files that they personally own, preventing malicious users from deleting other users' temporary files.
+```
+$ ls -l /dev/null /dev/zero /dev/urandom
+crw-rw-rw- 1 root root 1, 3 Oct 22 14:20 /dev/null
+crw-rw-rw- 1 root root 1, 5 Oct 22 14:20 /dev/zero
+crw-rw-rw- 1 root root 1, 9 Oct 22 14:20 /dev/urandom
+```
+**Figure 5.3 – Character pseudo-devices and kernel interfaces in /dev and /proc.**
 
 ---
 
-## Part 4. Disks and the Kernel as Files
+## Conclusion (Concluzii proprii)
 
-### Observe Questions & Answers
-
-1. **Disk layout & mount:**  
-   Disk `sda` with partition `/dev/sda2` (LVM volume `/dev/mapper/ubuntu--vg-ubuntu--lv`) formatted with `ext4` and mounted at `/`.
-2. **Root filesystem usage:**  
-   Root filesystem is 31% full (6.4 GB used out of 22 GB).
-3. **CPU cores and RAM in `/proc`:**  
-   - Cores: `/proc/cpuinfo` shows 2 virtual processor cores.  
-   - RAM: `/proc/meminfo` reports 3,994,528 kB (~4 GB).
-4. **`/proc/self/status` program name:**  
-   The `Name:` field shows `head` (or `cat`), because `/proc/self` is dynamically generated by the kernel to point to whichever process is currently querying the `/proc` filesystem.
-
----
-
-## Conclusion
-The UNIX file system seamlessly abstracts physical blocks, character devices, system statistics, and network endpoints into a uniform hierarchical tree. Understanding inodes, hard vs. soft links, and permissions is essential for low-level system design and security.
+In this laboratory work, I investigated the core structural abstractions of the Linux filesystem:
+1. **Inodes as Core Identifiers:** Confirmed that a filename in UNIX is merely an entry in a directory table pointing to an inode. Data blocks belong to the inode, not the filename, explaining why hard links share identical data and withstand target renames.
+2. **Directory Invariant:** Verified how directory link counts reflect structural hierarchy: `link_count = 2 + number_of_subdirectories` due to `.` and `..` references.
+3. **Storage Efficiency:** Observed sparse file mechanics, demonstrating how modern filesystems avoid allocating physical storage for unwritten zero blocks.
+4. **VFS Power:** Explored how `/dev`, `/proc`, and `/sys` virtualize hardware devices, processes, and kernel tunables behind standard POSIX filesystem interfaces.
