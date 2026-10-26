@@ -2,54 +2,66 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/types.h>
 
-/* Implements: ls /usr/bin | grep x | wc -l using 2 pipes and 3 processes */
-int main(void)
+int
+main(int argc, char *argv[])
 {
-    int p1[2], p2[2];
+  int fds_upstream[2], fds_downstream[2];
+  if (pipe(fds_upstream) < 0 || pipe(fds_downstream) < 0) {
+    perror("pipe initialization error");
+    exit(1);
+  }
 
-    if (pipe(p1) < 0 || pipe(p2) < 0) {
-        perror("pipe");
-        return 1;
-    }
+  // Stage 1: ls /usr/bin -> upstream pipe
+  if (fork() == 0) {
+    close(1);
+    dup(fds_upstream[1]);
+    close(fds_upstream[0]);
+    close(fds_upstream[1]);
+    close(fds_downstream[0]);
+    close(fds_downstream[1]);
+    execlp("ls", "ls", "/usr/bin", (char *)NULL);
+    perror("exec ls failure");
+    exit(1);
+  }
 
-    /* Child 1: ls /usr/bin */
-    if (fork() == 0) {
-        dup2(p1[1], 1);
-        close(p1[0]); close(p1[1]);
-        close(p2[0]); close(p2[1]);
-        execlp("ls", "ls", "/usr/bin", (char *)NULL);
-        perror("exec ls");
-        exit(127);
-    }
+  // Stage 2: grep x (reads upstream, writes downstream)
+  if (fork() == 0) {
+    close(0);
+    dup(fds_upstream[0]);
+    close(1);
+    dup(fds_downstream[1]);
+    close(fds_upstream[0]);
+    close(fds_upstream[1]);
+    close(fds_downstream[0]);
+    close(fds_downstream[1]);
+    execlp("grep", "grep", "x", (char *)NULL);
+    perror("exec grep failure");
+    exit(1);
+  }
 
-    /* Child 2: grep x */
-    if (fork() == 0) {
-        dup2(p1[0], 0);
-        dup2(p2[1], 1);
-        close(p1[0]); close(p1[1]);
-        close(p2[0]); close(p2[1]);
-        execlp("grep", "grep", "x", (char *)NULL);
-        perror("exec grep");
-        exit(127);
-    }
+  // Stage 3: wc -l reads downstream
+  if (fork() == 0) {
+    close(0);
+    dup(fds_downstream[0]);
+    close(fds_upstream[0]);
+    close(fds_upstream[1]);
+    close(fds_downstream[0]);
+    close(fds_downstream[1]);
+    execlp("wc", "wc", "-l", (char *)NULL);
+    perror("exec wc failure");
+    exit(1);
+  }
 
-    /* Child 3: wc -l */
-    if (fork() == 0) {
-        dup2(p2[0], 0);
-        close(p1[0]); close(p1[1]);
-        close(p2[0]); close(p2[1]);
-        execlp("wc", "wc", "-l", (char *)NULL);
-        perror("exec wc");
-        exit(127);
-    }
+  // Master process closes all pipe descriptors
+  close(fds_upstream[0]);
+  close(fds_upstream[1]);
+  close(fds_downstream[0]);
+  close(fds_downstream[1]);
 
-    /* Parent closes all pipe ends */
-    close(p1[0]); close(p1[1]);
-    close(p2[0]); close(p2[1]);
-
-    wait(NULL);
-    wait(NULL);
-    wait(NULL);
-    return 0;
+  wait((int *)0);
+  wait((int *)0);
+  wait((int *)0);
+  return 0;
 }

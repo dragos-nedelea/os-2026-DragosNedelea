@@ -1,61 +1,63 @@
 #include "kernel/types.h"
 #include "user/user.h"
 
+static inline void panic_msg(const char *err) {
+  fprintf(2, "pingpong fault: %s\n", err);
+  exit(1);
+}
+
 int
 main(int argc, char *argv[])
 {
-  int p2c[2], c2p[2];     // parent-to-child, child-to-parent
-  char b = 'x';
+  // Channel 1: parent writes, child reads
+  // Channel 2: child writes, parent reads
+  int fds_downstream[2], fds_upstream[2];
+  char token_byte = 'Z';
 
-  if(pipe(p2c) < 0 || pipe(c2p) < 0){
-    fprintf(2, "pingpong: pipe failed\n");
-    exit(1);
+  if (pipe(fds_downstream) != 0 || pipe(fds_upstream) != 0) {
+    panic_msg("unable to allocate IPC pipe pair");
   }
 
-  int pid = fork();
-  if(pid < 0){
-    fprintf(2, "pingpong: fork failed\n");
-    exit(1);
+  int child_pid = fork();
+  if (child_pid < 0) {
+    panic_msg("forking failed during setup");
   }
 
-  if(pid == 0){
-    // Child process
-    close(p2c[1]);
-    close(c2p[0]);
+  if (child_pid == 0) {
+    // === Child Task ===
+    close(fds_downstream[1]);
+    close(fds_upstream[0]);
 
-    if(read(p2c[0], &b, 1) != 1){
-      fprintf(2, "child read failed\n");
-      exit(1);
+    if (read(fds_downstream[0], &token_byte, sizeof(char)) != 1) {
+      panic_msg("child could not receive token from parent");
     }
     printf("%d: received ping\n", getpid());
 
-    if(write(c2p[1], &b, 1) != 1){
-      fprintf(2, "child write failed\n");
-      exit(1);
+    if (write(fds_upstream[1], &token_byte, sizeof(char)) != 1) {
+      panic_msg("child could not return token to parent");
     }
 
-    close(p2c[0]);
-    close(c2p[1]);
+    close(fds_downstream[0]);
+    close(fds_upstream[1]);
     exit(0);
   }
 
-  // Parent process
-  close(p2c[0]);
-  close(c2p[1]);
+  // === Parent Task ===
+  close(fds_downstream[0]);
+  close(fds_upstream[1]);
 
-  if(write(p2c[1], &b, 1) != 1){
-    fprintf(2, "parent write failed\n");
-    exit(1);
+  if (write(fds_downstream[1], &token_byte, sizeof(char)) != 1) {
+    panic_msg("parent failed to dispatch initial ping token");
   }
 
-  if(read(c2p[0], &b, 1) != 1){
-    fprintf(2, "parent read failed\n");
-    exit(1);
+  if (read(fds_upstream[0], &token_byte, sizeof(char)) != 1) {
+    panic_msg("parent failed to receive pong token from child");
   }
   printf("%d: received pong\n", getpid());
 
-  close(p2c[1]);
-  close(c2p[0]);
-  wait(0);
+  close(fds_downstream[1]);
+  close(fds_upstream[0]);
+
+  wait((int *)0);
   exit(0);
 }

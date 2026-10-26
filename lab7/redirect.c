@@ -1,32 +1,34 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <fcntl.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/wait.h>
+#include <sys/types.h>
 
-/* does the same as the shell command:   ls -l > out.txt   */
-int main(void)
+int
+main(int argc, char *argv[])
 {
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-        return 1;
-    }
+  pid_t child_worker = fork();
+  if (child_worker < 0) {
+    perror("failed to fork worker");
+    exit(1);
+  }
 
-    if (pid == 0) {
-        close(1);                                /* descriptor 1 is now free */
-        int fd = open("out.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd < 0) {
-            perror("open");
-            exit(1);
-        }
-        fprintf(stderr, "open gave descriptor %d\n", fd);
-        execlp("ls", "ls", "-l", (char *)NULL);  /* ls writes to 1, as always */
-        perror("exec");
-        exit(127);
+  if (child_worker == 0) {
+    // Redirect standard output to out.txt
+    close(1);
+    int target_fd = open("out.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (target_fd < 0) {
+      perror("file open failed");
+      exit(1);
     }
+    fprintf(stderr, "open allocated descriptor %d\n", target_fd);
+    execlp("ls", "ls", "-l", (char *)NULL);
+    perror("exec call failed");
+    exit(1);
+  }
 
-    waitpid(pid, NULL, 0);
-    printf("done: the listing is in out.txt\n");
-    return 0;
+  waitpid(child_worker, (int *)0, 0);
+  printf("completed: output captured in out.txt\n");
+  return 0;
 }

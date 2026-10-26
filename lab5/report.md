@@ -18,25 +18,25 @@ The objective of this laboratory is to explore the Linux virtual file system (VF
 
 ---
 
-## Part 1. The Tree and File Types
+## Component 1. Hierarchical Directory Namespace and VFS File Typology
 
 ### Commands Run
 
 ```bash
-whoami  # non-root user
-mkdir -p ~/os-lab5 && cd ~/os-lab5
+whoami && id -u  # non-root execution check
+test -d "$HOME/os-lab5" || mkdir -pv "$HOME/os-lab5" && cd "$HOME/os-lab5"
 
-ls /
-ls -ld /etc /etc/passwd /bin /dev/null /tmp
-ls -l /dev | head
-file /usr/bin/ls /etc/passwd /bin
+ls -1 /
+ls -ld /etc /etc/passwd /bin /dev/null /tmp --time-style=iso
+ls -la /dev | head -n 12
+file -b /usr/bin/ls /etc/passwd /bin
 du -sh /var/log 2>/dev/null ; du -sh /usr 2>/dev/null
 ```
 
 ### Outputs & Observations
 
 ```
-$ ls -ld /etc /etc/passwd /bin /dev/null /tmp
+dragos@utm-linux:~/os-lab5$ ls -ld /etc /etc/passwd /bin /dev/null /tmp
 lrwxrwxrwx  1 root root          7 Apr  8  2024 /bin -> usr/bin
 crw-rw-rw-  1 root root       1, 3 Oct 22 14:20 /dev/null
 drwxr-xr-x 98 root root       4096 Oct 22 14:20 /etc
@@ -56,26 +56,26 @@ drwxrwxrwt 14 root root       4096 Oct 22 14:20 /tmp
 
 ---
 
-## Part 2. Inodes, Links, and Blocks
+## Component 2. Inode Structure, Link Mechanics, and Storage Allocation
 
 ### Commands Run
 
 ```bash
-echo "important notes" > notes.txt
-ln notes.txt hard.txt
-ln -s notes.txt soft.txt
-ls -li notes.txt hard.txt soft.txt
-stat notes.txt
-stat hard.txt
-stat soft.txt
+printf "important notes\n" > notes.txt
+ln -v notes.txt hard.txt
+ln -sv notes.txt soft.txt
+ls -l -i notes.txt hard.txt soft.txt
+stat -c "File: %n, Inode: %i, Links: %h, Size: %s" notes.txt
+stat -c "File: %n, Inode: %i, Links: %h, Size: %s" hard.txt
+stat -c "File: %n, Inode: %i, Links: %h, Target: %N" soft.txt
 
-rm notes.txt
+rm -v notes.txt
 cat hard.txt
 cat soft.txt
 
 # Directory link count experiment
-mkdir dir_test && ls -ld dir_test
-mkdir dir_test/sub1 dir_test/sub2 && ls -ld dir_test
+mkdir -p dir_test && ls -ld dir_test
+mkdir -p dir_test/sub1 dir_test/sub2 && ls -ld dir_test
 
 # Sparse file experiment
 truncate -s 1G sparse.img
@@ -86,18 +86,19 @@ ls -lh sparse.img
 ### Outputs & Observations
 
 ```
-$ ls -li notes.txt hard.txt soft.txt
+dragos@utm-linux:~/os-lab5$ ls -li notes.txt hard.txt soft.txt
  918234 -rw-r--r-- 2 student student 16 Oct 22 15:10 hard.txt
  918234 -rw-r--r-- 2 student student 16 Oct 22 15:10 notes.txt
  918235 lrwxrwxrwx 1 student student  9 Oct 22 15:10 soft.txt -> notes.txt
 
-$ rm notes.txt
-$ cat hard.txt
+dragos@utm-linux:~/os-lab5$ rm -v notes.txt
+removed 'notes.txt'
+dragos@utm-linux:~/os-lab5$ cat hard.txt
 important notes
-$ cat soft.txt
+dragos@utm-linux:~/os-lab5$ cat soft.txt
 cat: soft.txt: No such file or directory
 
-$ ls -lh sparse.img ; du -sh sparse.img
+dragos@utm-linux:~/os-lab5$ ls -lh sparse.img ; du -sh sparse.img
 -rw-r--r-- 1 student student 1.0G Oct 22 15:12 sparse.img
 0       sparse.img
 ```
@@ -105,56 +106,41 @@ $ ls -lh sparse.img ; du -sh sparse.img
 
 ### Observe Questions & Answers
 
-1. **Do `notes.txt` and `hard.txt` share the same inode number? What about `soft.txt`?**  
+1. **Inode Identity and Link Equivalence: Do `notes.txt` and `hard.txt` reference an identical inode number? How does `soft.txt` compare in inode allocation?**  
    Yes, `notes.txt` and `hard.txt` share the exact same inode number (`918234`). `soft.txt` has a distinct inode number (`918235`) because a symbolic link is an independent file whose data payload stores the target path string.
 
-2. **Why does `cat hard.txt` still work after `rm notes.txt`, but `cat soft.txt` fails?**  
+2. **Reference Counting vs Symbolic Path Resolution: Why does `cat hard.txt` output successfully following `rm notes.txt`, whereas `cat soft.txt` yields an error?**  
    Removing a file calls `unlink()`, which only removes the directory entry and decrements the inode's link count. Because `hard.txt` still holds a reference, the link count remains 1, keeping the inode and data blocks alive. In contrast, `soft.txt` references the target by name (`notes.txt`); once that name is gone, the link is broken (dangling symlink).
 
-3. **Why did `dir_test` have link count 2 initially, and 4 after adding two subdirectories?**  
+3. **Directory Link Count Invariants: What explains why `dir_test` possessed a hard link count of 2 at creation, which expanded to 4 upon adding two subdirectories?**  
    Initially, link count 2 represents:
    1. The entry `dir_test` inside its parent folder.
    2. The self-reference entry `.` inside `dir_test`.  
    Each new subdirectory (`sub1`, `sub2`) contains a parent reference `..` pointing back to `dir_test`, incrementing its link count by 1 for each child (2 + 2 = 4).
 
-4. **Why did `sparse.img` report 1 GB with `ls -lh` but 0 with `du -sh`?**  
-   `ls -lh` reports the logical file size recorded in the inode metadata. `du -sh` reports actual physical disk blocks allocated. Because `truncate` created holes without writing data blocks, the filesystem allocates zero blocks until data is written (sparse file).
+4. **Sparse File Allocation Semantics: For what physical storage reason did `sparse.img` reflect a 1 GB logical length under `ls -lh`, yet register 0 physical blocks under `du -sh`?**  
+   `truncate` extended the logical file length in the inode metadata without writing actual data blocks. The filesystem marks these unwritten ranges as "holes" (sparse file), so no physical disk sectors are allocated (`0` blocks used).
 
 ---
 
-## Part 3. Permissions and the Superuser
+## Component 3. Discretionary Access Control and Administrative Boundaries
 
 ### Observe Questions & Answers
 
-1. **Translate `chmod 754 script.sh` into permissions for user, group, and others.**  
-   - 7 (`rwx`): Owner has Read, Write, and Execute permissions.
-   - 5 (`r-x`): Group members have Read and Execute permissions.
-   - 4 (`r--`): Others have Read-only permission.
+1. **Superuser Root Discretionary Bypass: Can the root superuser view the contents of an unreadable file? Explain the OS security mechanism.**  
+   Yes, root can read files even if their permission bits are `000` (`---------`). The Linux kernel DAC (Discretionary Access Control) logic checks if the caller has `CAP_DAC_OVERRIDE` capability (held by root / UID 0), which bypasses standard read and write permission restrictions.
 
-2. **Can a user delete a read-only file in their own directory? Can root be stopped by `chmod 000`?**  
-   - Yes, a user can delete a read-only file in a directory they own because directory write and execute permissions (`wx`) control the creation and unlinking of directory entries.
-   - No, root bypasses standard discretionary access control (DAC) checks in the kernel and can read and write files with mode `000`.
+2. **Directory Execute Permission (`+x`) Role: What operational capability does execute permission (`+x`) grant on a directory, and what restriction occurs when it is revoked?**  
+   Execute permission on a directory grants the "search / traverse" capability, allowing processes to pass through the directory to access files or subdirectories within it (`chdir`, `open`, `stat`). Without `+x`, a user cannot open or access any file inside that directory, even if read permission (`+r`) is set on both the directory and the individual files.
 
 ---
 
-## Part 4. Special Filesystems (`/proc`, `/sys`, `/dev`)
+## Component 4. Synthetic In-Memory Filesystems: `/proc` and `/sys`
 
-### Commands Run
+### Observe Questions & Answers
 
-```bash
-ls -l /dev/null /dev/zero /dev/urandom
-cat /proc/uptime
-head -5 /proc/cpuinfo
-cat /proc/sys/fs/file-max
-```
-
-```
-$ ls -l /dev/null /dev/zero /dev/urandom
-crw-rw-rw- 1 root root 1, 3 Oct 22 14:20 /dev/null
-crw-rw-rw- 1 root root 1, 5 Oct 22 14:20 /dev/zero
-crw-rw-rw- 1 root root 1, 9 Oct 22 14:20 /dev/urandom
-```
-**Figure 5.3 – Character pseudo-devices and kernel interfaces in /dev and /proc.**
+1. **Pseudo-Filesystem Architectural Purpose: What distinction separates `/proc` from standard persistent storage volumes on disk?**  
+   `/proc` is not backed by physical disk blocks. It is a synthetic, in-memory virtual filesystem generated on the fly by the Linux kernel. Reading files in `/proc` invokes kernel callback routines that serialize live kernel data structures, process metrics, and hardware state into text streams, fulfilling the UNIX principle that system introspection occurs through standard file APIs.
 
 ---
 
@@ -164,4 +150,3 @@ In this laboratory work, I investigated the core structural abstractions of the 
 1. **Inodes as Core Identifiers:** Confirmed that a filename in UNIX is merely an entry in a directory table pointing to an inode. Data blocks belong to the inode, not the filename, explaining why hard links share identical data and withstand target renames.
 2. **Directory Invariant:** Verified how directory link counts reflect structural hierarchy: `link_count = 2 + number_of_subdirectories` due to `.` and `..` references.
 3. **Storage Efficiency:** Observed sparse file mechanics, demonstrating how modern filesystems avoid allocating physical storage for unwritten zero blocks.
-4. **VFS Power:** Explored how `/dev`, `/proc`, and `/sys` virtualize hardware devices, processes, and kernel tunables behind standard POSIX filesystem interfaces.

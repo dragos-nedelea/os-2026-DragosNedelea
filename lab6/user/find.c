@@ -3,96 +3,121 @@
 #include "user/user.h"
 #include "kernel/fs.h"
 
-char*
-fmtname(char *path)
+// Extract final component filename from a full path
+static const char*
+extract_leaf_name(const char *raw_path)
 {
-  char *p;
-  // Find first character after last slash.
-  for(p = path + strlen(path); p >= path && *p != '/'; p--)
-    ;
-  p++;
-  return p;
+  const char *leaf = raw_path;
+  for (const char *curr = raw_path; *curr; ++curr) {
+    if (*curr == '/') {
+      leaf = curr + 1;
+    }
+  }
+  return leaf;
 }
 
-void
-find(char *path, char *target, int show_inode)
+// Assemble parent path and child entry name into destination buffer
+static int
+combine_subpath(char *dest_buf, int dest_cap, const char *dir_prefix, const char *entry_leaf)
 {
-  char buf[512];
-  char *p;
-  int fd;
-  struct dirent de;
-  struct stat st;
+  int plen = strlen(dir_prefix);
+  int nlen = strlen(entry_leaf);
+  if (plen + 1 + nlen + 1 > dest_cap) {
+    return -1;
+  }
+  strcpy(dest_buf, dir_prefix);
+  dest_buf[plen] = '/';
+  strcpy(dest_buf + plen + 1, entry_leaf);
+  return 0;
+}
 
-  if((fd = open(path, 0)) < 0){
-    fprintf(2, "find: cannot open %s\n", path);
+// Recursive directory scanning routine
+static void
+traverse_and_match(const char *current_dir, const char *query_pattern, int show_inode)
+{
+  int dir_fd = open(current_dir, 0);
+  if (dir_fd < 0) {
+    fprintf(2, "find: open failed on path '%s'\n", current_dir);
     return;
   }
 
-  if(fstat(fd, &st) < 0){
-    fprintf(2, "find: cannot stat %s\n", path);
-    close(fd);
+  struct stat node_st;
+  if (fstat(dir_fd, &node_st) < 0) {
+    fprintf(2, "find: stat failed on path '%s'\n", current_dir);
+    close(dir_fd);
     return;
   }
 
-  switch(st.type){
-  case T_DEVICE:
-  case T_FILE:
-    if(strcmp(fmtname(path), target) == 0){
-      if(show_inode)
-        printf("%s %d\n", path, st.ino);
-      else
-        printf("%s\n", path);
-    }
-    break;
-
-  case T_DIR:
-    if(strlen(path) + 1 + DIRSIZ + 1 > sizeof(buf)){
-      fprintf(2, "find: path too long\n");
-      break;
-    }
-    strcpy(buf, path);
-    p = buf + strlen(buf);
-    *p++ = '/';
-
-    while(read(fd, &de, sizeof(de)) == sizeof(de)){
-      if(de.inum == 0)
-        continue;
-      if(strcmp(de.name, ".") == 0 || strcmp(de.name, "..") == 0)
-        continue;
-
-      memmove(p, de.name, DIRSIZ);
-      p[DIRSIZ] = 0;
-
-      if(stat(buf, &st) < 0){
-        fprintf(2, "find: cannot stat %s\n", buf);
-        continue;
-      }
-
-      if(st.type == T_DIR){
-        find(buf, target, show_inode);
-      } else if(strcmp(de.name, target) == 0){
-        if(show_inode)
-          printf("%s %d\n", buf, st.ino);
-        else
-          printf("%s\n", buf);
+  // Handle direct file argument
+  if (node_st.type != T_DIR) {
+    const char *bname = extract_leaf_name(current_dir);
+    if (strcmp(bname, query_pattern) == 0) {
+      if (show_inode) {
+        printf("%s %d\n", current_dir, node_st.ino);
+      } else {
+        printf("%s\n", current_dir);
       }
     }
-    break;
+    close(dir_fd);
+    return;
   }
-  close(fd);
+
+  char nested_path[512];
+  struct dirent dir_record;
+
+  while (read(dir_fd, &dir_record, sizeof(dir_record)) == sizeof(dir_record)) {
+    if (dir_record.inum == 0) continue;
+
+    // Filter out '.' and '..' directory self/parent links
+    if (dir_record.name[0] == '.' && (dir_record.name[1] == '\0' || 
+       (dir_record.name[1] == '.' && dir_record.name[2] == '\0'))) {
+      continue;
+    }
+
+    char record_name[DIRSIZ + 1];
+    memmove(record_name, dir_record.name, DIRSIZ);
+    record_name[DIRSIZ] = '\0';
+
+    if (combine_subpath(nested_path, sizeof(nested_path), current_dir, record_name) < 0) {
+      fprintf(2, "find: buffer limit exceeded traversing '%s'\n", current_dir);
+      continue;
+    }
+
+    struct stat child_st;
+    if (stat(nested_path, &child_st) < 0) {
+      fprintf(2, "find: unable to stat '%s'\n", nested_path);
+      continue;
+    }
+
+    if (strcmp(record_name, query_pattern) == 0) {
+      if (show_inode) {
+        printf("%s %d\n", nested_path, child_st.ino);
+      } else {
+        printf("%s\n", nested_path);
+      }
+    }
+
+    if (child_st.type == T_DIR) {
+      traverse_and_match(nested_path, query_pattern, show_inode);
+    }
+  }
+
+  close(dir_fd);
 }
 
 int
 main(int argc, char *argv[])
 {
-  int show_inode = 0;
-  if(argc == 4 && strcmp(argv[3], "-n") == 0){
-    show_inode = 1;
-  } else if(argc != 3){
-    fprintf(2, "usage: find <path> <filename> [-n]\n");
+  if (argc < 3) {
+    fprintf(2, "Usage: find <dir> <pattern> [-inum]\n");
     exit(1);
   }
 
-  find(argv[1], argv[2], show_inode);
+  int display_inum = 0;
+  if (argc >= 4 && strcmp(argv[3], "-inum") == 0) {
+    display_inum = 1;
+  }
+
+  traverse_and_match(argv[1], argv[2], display_inum);
   exit(0);
 }

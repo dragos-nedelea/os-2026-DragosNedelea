@@ -2,39 +2,43 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/types.h>
 
-/* does the same as the shell command:   ls /etc | wc -l   */
-int main(void)
+int
+main(int argc, char *argv[])
 {
-    int p[2];
-    if (pipe(p) < 0) {
-        perror("pipe");
-        return 1;
-    }
+  int pipe_fds[2];
+  if (pipe(pipe_fds) < 0) {
+    perror("pipe creation failure");
+    exit(1);
+  }
 
-    if (fork() == 0) {                           /* ls: its stdout becomes p[1] */
-        close(1);
-        dup(p[1]);                               /* smallest free number: 1 */
-        close(p[0]);
-        close(p[1]);
-        execlp("ls", "ls", "/etc", (char *)NULL);
-        perror("exec ls");
-        exit(127);
-    }
+  // First Stage: ls /etc writing to pipe
+  if (fork() == 0) {
+    close(1);
+    dup(pipe_fds[1]);
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    execlp("ls", "ls", "/etc", (char *)NULL);
+    perror("failed executing ls");
+    exit(1);
+  }
 
-    if (fork() == 0) {                           /* wc: its stdin becomes p[0] */
-        close(0);
-        dup(p[0]);                               /* smallest free number: 0 */
-        close(p[0]);
-        close(p[1]);
-        execlp("wc", "wc", "-l", (char *)NULL);
-        perror("exec wc");
-        exit(127);
-    }
+  // Second Stage: wc -l reading from pipe
+  if (fork() == 0) {
+    close(0);
+    dup(pipe_fds[0]);
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    execlp("wc", "wc", "-l", (char *)NULL);
+    perror("failed executing wc");
+    exit(1);
+  }
 
-    close(p[0]);                                 /* the parent uses neither end */
-    close(p[1]);
-    wait(NULL);
-    wait(NULL);
-    return 0;
+  close(pipe_fds[0]);
+  close(pipe_fds[1]);
+
+  wait((int *)0);
+  wait((int *)0);
+  return 0;
 }

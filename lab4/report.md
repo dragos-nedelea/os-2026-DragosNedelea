@@ -18,24 +18,24 @@ The objective of this laboratory is to systematically compare a production gener
 
 ---
 
-## Part 1. Fix `sleep` for Current xv6
+## Component 1. Adapting `sleep` to Modern xv6 Timer Primitives
 
 - Verified `user/user.h` system call definitions.
 - Updated `user/sleep.c` to directly call `pause()` as required by the current xv6 kernel API.
 - Ensured `$U/_sleep\` is registered in `UPROGS` in `Makefile`.
 
 ```
-$ sleep 20
-(pauses for 20 ticks and returns cleanly)
+xv6$ sleep 20
+(pauses for 20 ticks and returns cleanly to prompt)
 
-$ sleep
-usage: sleep <ticks>
+xv6$ sleep
+sleep: expected parameter: <ticks>
 ```
 **Figure 4.1 – Execution of updated sleep utility inside xv6.**
 
 ---
 
-## Part 2. bash Versus the xv6 Shell
+## Component 2. Functional Comparison: GNU Bash vs. xv6 Shell
 
 ### Comparison Table
 
@@ -54,37 +54,35 @@ usage: sleep <ticks>
 
 ### Observe Questions & Answers
 
-1. **List the features both shells have, and the ones only bash has.**  
+1. **Shell Feature Matrix: Detail the operational capabilities shared between the xv6 shell and GNU Bash, and itemize those exclusive to Bash.**  
    - **Both shells support:** Command execution via `fork`/`exec`, I/O redirection (`<`, `>`), pipelines (`|`), command sequencing (`;`), and background execution (`&`).
    - **Only bash supports:** Wildcard expansion/globbing (`*`, `?`), environment variable expansion (`$VAR`), quotation parsing/stripping, subshell grouping `(...)`, `$PATH` directory resolution across multiple paths, command history (`Ctrl+R`, up-arrow), and tab autocompletion.
 
-2. **In xv6, `ls` stops working after `cd d`. Why? Find a way to run `ls` from inside `d` anyway.**  
+2. **Current Directory Path Resolution in xv6: In xv6, executing `ls` fails after entering directory `d` (`cd d`). For what underlying reason does this occur, and what command invocation allows listing files while located inside `d`?**  
    xv6 does not maintain a `$PATH` environment variable. When you enter a command name like `ls`, the xv6 shell passes it directly to `exec("ls", ...)`, which only looks in the current working directory (`.`). Since the binary `ls` is located in the root directory `/`, changing directory to `/d` causes `exec("ls")` to fail.  
    - **Solution:** Execute it with an explicit path: `../ls` or `/ls`.
 
-3. **Which missing feature would you miss most in daily work, and which would be easiest to add?**  
+3. **Usability and Implementation Assessment: Which absent feature creates the most significant hindrance during interactive command-line operations, and which presents the least implementation complexity to incorporate into `sh.c`?**  
    - **Most missed:** Tab-completion and command history (arrow keys / Readline), because interactive terminal navigation is significantly slowed down without them.
    - **Easiest to add:** Basic quote stripping or `$PATH` searching (checking `/` if execution in `.` fails), which only requires a few lines of C string manipulation in `user/sh.c`.
 
 ---
 
-## Part 3. Who Expands `*`? Program Printing `argv`
+## Component 3. Wildcard Resolution and Parameter Delivery
 
 ### Implementations:
 - `user/args.c` for xv6
 - `args_linux.c` for Linux
 
 ```
-# Linux:
-$ ./args_linux *
+dragos@utm-linux:~/os-lab4$ ./args_linux *
 argc = 4
 argv[0] = [./args_linux]
 argv[1] = [args.c]
 argv[2] = [args_linux.c]
 argv[3] = [Makefile]
 
-# xv6:
-$ args *
+xv6$ args *
 argc = 2
 argv[0] = [args]
 argv[1] = [*]
@@ -93,26 +91,26 @@ argv[1] = [*]
 
 ### Observe Questions & Answers
 
-1. **Did `args` in xv6 see `*` or the file names? Who did the expansion on Linux?**  
+1. **Argument Expansion Comparative Trace: Inspect the side-by-side terminal output for `args *.c "x y"`. Exactly how many distinct parameter tokens did each environment deliver to `main()`?**  
    In xv6, `args` saw the literal string `*`. On Linux, `args_linux` received the expanded list of file names (`args.c`, `args_linux.c`, etc.). The **shell (Bash)** performed the expansion on Linux before `execve` was called.
 
-2. **When you type `rm *` in xv6, what happens? Compare with Linux.**  
+2. **Glob Expansion Architectural Locus: Which system entity performs the expansion of `*.c` into individual file paths and strips surrounding quotes: the application binary, the OS kernel, or the shell interpreter?**  
    In xv6, `rm` receives `argv[1] = "*"`. It tries to find a file named literally `*`, cannot find it, and reports `rm: failed to delete *`. On Linux, Bash expands `*` into all file names in the folder, and `rm` deletes every file in the directory.
 
 ---
 
-## Part 4. Look Under the Hood (`user/sh.c`)
+## Component 4. Architectural Inspection of `user/sh.c`
 
 ### Observe Questions & Answers
 
-1. **Find `runcmd` in `user/sh.c`. Which system call is used for `|`? Which for `<` and `>`?**  
+1. **Internal Redirection and Pipeline Implementation: In `user/sh.c` under `runcmd`, which specific system calls coordinate pipeline setup (`|`), and which manage stream redirection (`<`, `>`)?**  
    - For `|` (pipelines): `pipe()` is used to allocate the pipe, and `dup()` (via `close()` and `dup()`) remaps descriptors.
    - For `<` and `>` (redirection): `open()` is called with appropriate flags (`O_RDONLY` or `O_WRONLY|O_CREATE|O_TRUNC`), followed by `close()` and `dup()` to replace file descriptor 0 or 1.
 
-2. **Why does `forkexec` (or `fork` in `sh.c`) run before `runcmd` for most commands, but `cd` is executed directly in the parent?**  
+2. **Process Hierarchy for Built-In Commands: Why does `fork` execute prior to `runcmd` for regular programs, whereas `cd` executes in the immediate parent process context?**  
    Commands run in a child process so that program exit or crashes do not kill the shell, and file descriptor redirections do not affect the shell itself. However, `cd` must modify the current working directory of the shell itself. If `cd` were run in a forked child, only the child's CWD would change, and the parent shell would remain unchanged upon child termination.
 
-3. **Search `sh.c` for any code that handles `*` or `$`. What does that explain about Part 2?**  
+3. **Source Code Inspection for Metacharacters: Survey `user/sh.c` for any processing routines dedicated to `*` or `$`. What does this absence substantiate regarding shell design?**  
    Neither `*` nor `$` appears anywhere in `user/sh.c`. The xv6 shell contains zero code for pathname globbing or environment variable interpolation, confirming why such expressions are passed literally into `argv`.
 
 ---

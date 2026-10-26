@@ -2,29 +2,32 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/types.h>
 
-/* the three steps of the shell for the command:   ls -l   */
-int main(void)
+int
+main(int argc, char *argv[])
 {
-    printf("parent: my PID is %d\n", getpid());
-    fflush(stdout);
+  printf("parent: active PID is %d\n", getpid());
+  fflush(stdout);
 
-    pid_t pid = fork();                          /* step 1: copy myself */
-    if (pid < 0) {
-        perror("fork");
-        return 1;
-    }
+  pid_t spawned_pid = fork();
+  if (spawned_pid < 0) {
+    perror("fork failure");
+    exit(1);
+  }
 
-    if (pid == 0) {                              /* only the child runs this */
-        printf("child:  my PID is %d, my parent is %d\n", getpid(), getppid());
-        fflush(stdout);
-        execlp("ls", "ls", "-l", (char *)NULL);  /* step 2: become ls */
-        perror("exec");                          /* runs only if exec failed */
-        exit(127);
-    }
+  if (spawned_pid == 0) {
+    // Child sub-task execution
+    printf("child: my PID is %d, my parent is %d\n", getpid(), getppid());
+    execlp("ls", "ls", "-l", (char *)NULL);
+    perror("exec invocation failed");
+    exit(127);
+  }
 
-    int status;
-    waitpid(pid, &status, 0);                    /* step 3: wait for the child */
-    printf("parent: child %d ended with status %d\n", pid, WEXITSTATUS(status));
-    return 0;
+  int exit_info = 0;
+  waitpid(spawned_pid, &exit_info, 0);
+  printf("parent: child process %d terminated with exit code %d\n", 
+         spawned_pid, WEXITSTATUS(exit_info));
+
+  return 0;
 }

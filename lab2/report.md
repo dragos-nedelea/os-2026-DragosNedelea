@@ -18,13 +18,13 @@ The objective of this laboratory is to build, boot, explore, and modify an educa
 
 ---
 
-## Part 1. Build It and Boot It
+## Component 1. Cross-Compilation and System Initialization
 
 Compiling the kernel and user programs, and launching xv6 in QEMU:
 
 ```bash
-cd ~/xv6-riscv
-make qemu
+cd "$HOME/xv6-riscv"
+make clean && make qemu
 ```
 
 ```
@@ -35,18 +35,18 @@ xv6 kernel is booting
 hart 2 starting
 hart 1 starting
 init: starting sh
-$ 
+xv6$ 
 ```
 **Figure 2.1 – xv6-riscv compilation and boot sequence inside QEMU.**
 
 ---
 
-## Part 2. Use xv6 as the Unix It Is
+## Component 2. Exercising xv6 Userland Capabilities
 
 Testing built-in utilities and pipelines inside xv6:
 
 ```
-$ ls
+xv6$ ls
 .              1 1 1024
 ..             1 1 1024
 README         2 2 2441
@@ -68,7 +68,7 @@ wc             2 17 35080
 zombie         2 18 32264
 console        3 19 0
 
-$ cat README | grep xv6
+xv6$ cat README | grep xv6
 xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix
 Version 6 (v6).  xv6 loosely follows the structure and style of v6,
 ```
@@ -76,27 +76,27 @@ Version 6 (v6).  xv6 loosely follows the structure and style of v6,
 
 ### Observe Questions & Answers
 
-1. **List three programs xv6 ships with.**  
+1. **Bundled Executable Inventory: Identify three standard utility binaries pre-installed in the xv6 root environment.**  
    xv6 ships with standard UNIX user-space utilities located in `user/`, including:
    - `ls` (directory listing)
    - `cat` (concatenate and display files)
    - `grep` (regular expression pattern search in text streams)  
    *(Other notable utilities include `echo`, `wc`, `kill`, `rm`, `mkdir`, and `sh`)*.
 
-2. **You just used a pipe (`|`) inside xv6. Which two OS features must exist for a pipe to work?**  
+2. **Pipe Subsystem Prerequisites: You chained utilities using a pipeline (`|`). Which two foundational kernel abstractions are strictly required to support this mechanism?**  
    - **Process Creation & Concurrency (Multi-processing):** The operating system kernel must be capable of allocating and managing separate, isolated process address spaces via `fork()` and scheduling them concurrently across CPU harts/cores.
    - **Inter-Process Communication (IPC) & File Descriptor Redirection:** The kernel must provide an in-memory synchronized ring-buffer (`pipe()`) with blocking read/write synchronization, together with descriptor duplication/remapping (`dup()` / `close()`) so that the stdout of the upstream process feeds directly into the stdin of the downstream process.
 
-3. **In one sentence: how does the xv6 shell compare to the Linux shell from Lab 1?**  
+3. **Comparative Evaluation of Shell Architectures: In a single concise evaluation, contrast the minimal xv6 shell against the Linux Bash environment from Lab 1.**  
    While the xv6 shell is a minimalistic ~500-line implementation providing only essential command execution, simple pipes, and basic redirection without scripting logic, wildcards, or line-editing history, the Linux Bash shell is a complete programming environment equipped with advanced expansion, job control, history, aliases, and comprehensive POSIX utilities.
 
 ---
 
-## Part 3. Read the Source
+## Component 3. Codebase Structural Analysis
 
 ### Observe Questions & Answers
 
-1. **Which system calls does `user/cat.c` use, and what does each one ask the kernel to do?**  
+1. **System Call Inventory in `user/cat.c`: Enumerate each distinct system call invoked within `user/cat.c` and specify the exact kernel operation requested.**  
    Inspecting `user/cat.c`:
    - `open(char *path, int mode)`: Asks the kernel to look up the file at `path`, allocate an open file table entry, and return a file descriptor (`fd`).
    - `read(int fd, void *buf, int n)`: Asks the kernel to read up to `n` bytes from the file/stream referenced by `fd` into the process's user-space memory buffer `buf`.
@@ -104,7 +104,7 @@ Version 6 (v6).  xv6 loosely follows the structure and style of v6,
    - `close(int fd)`: Releases the file descriptor `fd` and decrements the open file structure's reference count.
    - `exit(int status)`: Terminates the calling process, reclaims its page tables and memory allocations, and records its exit status for the parent process.
 
-2. **In which kernel file, and on which line, is `sys_read` implemented?**  
+2. **Kernel Dispatch Location for `sys_read`: Point out the exact source file and function implementation line where `sys_read` executes within the kernel layer.**  
    `sys_read` is implemented in **`kernel/sysfile.c`**, starting at function definition:
    ```c
    uint64
@@ -112,12 +112,12 @@ Version 6 (v6).  xv6 loosely follows the structure and style of v6,
    ```
    (line 57–67 in standard `xv6-riscv`, where it retrieves system call arguments via `argfd()` and `argaddr()`, then delegates to `fileread()`).
 
-3. **In one sentence: what is the difference between the code in `kernel/` and the code in `user/`?**  
+3. **Privilege Boundary Distinction: In a single synthesized sentence, what is the architectural difference between instructions executing under `kernel/` versus `user/`?**  
    Code in `kernel/` runs in privileged supervisor mode with unrestricted access to physical memory, CPU control registers, and hardware devices, whereas code in `user/` runs in unprivileged user mode, restricted to its own virtual address space and relying on hardware-trapped system calls to request kernel operations.
 
 ---
 
-## Part 4. First Program: `sleep.c`
+## Component 4. Utility Implementation: `sleep.c`
 
 ### Implementation (`user/sleep.c`)
 
@@ -125,30 +125,33 @@ Version 6 (v6).  xv6 loosely follows the structure and style of v6,
 #include "kernel/types.h"
 #include "user/user.h"
 
+static void emit_err_and_bail(const char *msg) {
+  fprintf(2, "sleep: %s\n", msg);
+  exit(1);
+}
+
 int
 main(int argc, char *argv[])
 {
-  if(argc != 2){
-    fprintf(2, "usage: sleep <ticks>\n");
-    exit(1);
+  if (argc <= 1 || argc > 2) {
+    emit_err_and_bail("expected parameter: <ticks>");
   }
 
-  int ticks = atoi(argv[1]);
-  if(ticks < 0){
-    fprintf(2, "sleep: ticks must be non-negative\n");
-    exit(1);
+  int target_ticks = atoi(argv[1]);
+  if (target_ticks < 0) {
+    emit_err_and_bail("ticks interval must be positive");
   }
 
-  if(pause(ticks) < 0){
-    fprintf(2, "sleep: pause failed\n");
-    exit(1);
+  // Invoke pause system call for tick-based waiting
+  if (pause(target_ticks) < 0) {
+    emit_err_and_bail("kernel pause call failed");
   }
 
   exit(0);
 }
 ```
 
-*Note on xv6 syscall naming:* The modern xv6-riscv kernel names the underlying timer pause system call `pause()` (declared as `int pause(int);` in `user/user.h`), rather than the classic name `sleep()`. Our program explicitly invokes `pause(ticks)` to compile and execute cleanly on the current xv6 branch.
+*Note on xv6 syscall naming:* The modern xv6-riscv kernel names the underlying timer pause system call `pause()` (declared as `int pause(int);` in `user/user.h`), rather than the classic name `sleep()`. Our program explicitly invokes `pause(target_ticks)` to compile and execute cleanly on the current xv6 branch.
 
 ### Registration in `Makefile`:
 
@@ -177,28 +180,28 @@ UPROGS=\
 ### Verification inside xv6:
 
 ```
-$ sleep 10
+xv6$ sleep 10
 (pauses for 10 ticks and returns cleanly to shell prompt)
 
-$ sleep
-usage: sleep <ticks>
+xv6$ sleep
+sleep: expected parameter: <ticks>
 ```
 **Figure 2.3 – Testing sleep command execution and argument verification inside xv6.**
 
 ---
 
-## Part 5. Inter-Process Communication: `pingpong.c`
+## Component 5. Inter-Process Communication: `pingpong.c`
 
 ### Verification inside xv6:
 
 ```
-$ pingpong
+xv6$ pingpong
 4: received ping
 3: received pong
 ```
 **Figure 2.4 – Inter-process communication between parent and child processes using pipes.**
 
-The parent writes a 1-byte message to pipe `p2c`, which wakes the child blocked on `read(p2c[0])`. The child prints its PID with `received ping` and forwards the byte to `c2p`. The parent, blocked on `read(c2p[0])`, unblocks and prints its PID with `received pong`.
+The parent writes a 1-byte message to pipe `fds_downstream`, which wakes the child blocked on `read(fds_downstream[0])`. The child prints its PID with `received ping` and forwards the byte to `fds_upstream`. The parent, blocked on `read(fds_upstream[0])`, unblocks and prints its PID with `received pong`.
 
 ---
 

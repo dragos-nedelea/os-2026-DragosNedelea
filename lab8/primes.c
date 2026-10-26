@@ -1,48 +1,49 @@
 #include "kernel/types.h"
 #include "user/user.h"
 
-// Concurrent prime sieve using pipelines
-void
-sieve(int pleft[2])
+// Concurrent pipeline sieve for prime discovery (Eratosthenes algorithm)
+static void
+filter_primes_stage(int input_fd)
 {
-  close(pleft[1]); // Close write end of left pipe
-
-  int prime;
-  if(read(pleft[0], &prime, sizeof(int)) != sizeof(int)){
-    close(pleft[0]);
+  int discovered_prime = 0;
+  if (read(input_fd, &discovered_prime, sizeof(int)) <= 0) {
+    close(input_fd);
     exit(0);
   }
 
-  printf("prime %d\n", prime);
+  printf("prime %d\n", discovered_prime);
 
-  int pright[2];
-  if(pipe(pright) < 0){
-    fprintf(2, "pipe failed\n");
+  int downstream_channel[2];
+  if (pipe(downstream_channel) != 0) {
+    fprintf(2, "primes: pipe allocation failed\n");
+    close(input_fd);
     exit(1);
   }
 
-  int pid = fork();
-  if(pid < 0){
-    fprintf(2, "fork failed\n");
+  int next_worker = fork();
+  if (next_worker < 0) {
+    fprintf(2, "primes: worker fork failed\n");
+    close(input_fd);
     exit(1);
   }
 
-  if(pid == 0){
-    // Child stage
-    close(pleft[0]);
-    sieve(pright);
+  if (next_worker == 0) {
+    // Child manages downstream stage
+    close(input_fd);
+    close(downstream_channel[1]);
+    filter_primes_stage(downstream_channel[0]);
   } else {
-    // Current stage
-    close(pright[0]); // Close read end of right pipe
-    int n;
-    while(read(pleft[0], &n, sizeof(int)) == sizeof(int)){
-      if(n % prime != 0){
-        write(pright[1], &n, sizeof(int));
+    // Parent filters numbers against discovered_prime
+    close(downstream_channel[0]);
+    int candidate_number = 0;
+    while (read(input_fd, &candidate_number, sizeof(int)) == sizeof(int)) {
+      if ((candidate_number % discovered_prime) != 0) {
+        write(downstream_channel[1], &candidate_number, sizeof(int));
       }
     }
-    close(pleft[0]);
-    close(pright[1]);
-    wait(0);
+    close(input_fd);
+    close(downstream_channel[1]);
+    wait((int *)0);
     exit(0);
   }
 }
@@ -50,27 +51,29 @@ sieve(int pleft[2])
 int
 main(int argc, char *argv[])
 {
-  int p[2];
-  if(pipe(p) < 0){
-    fprintf(2, "pipe failed\n");
+  int initial_pipe[2];
+  if (pipe(initial_pipe) != 0) {
+    fprintf(2, "primes: initial pipe creation failed\n");
     exit(1);
   }
 
-  int pid = fork();
-  if(pid < 0){
-    fprintf(2, "fork failed\n");
+  int first_worker = fork();
+  if (first_worker < 0) {
+    fprintf(2, "primes: initial fork failed\n");
     exit(1);
   }
 
-  if(pid == 0){
-    sieve(p);
+  if (first_worker == 0) {
+    close(initial_pipe[1]);
+    filter_primes_stage(initial_pipe[0]);
   } else {
-    close(p[0]);
-    for(int i = 2; i <= 35; i++){
-      write(p[1], &i, sizeof(int));
+    close(initial_pipe[0]);
+    const int ceiling_val = 35;
+    for (int seed_val = 2; seed_val <= ceiling_val; ++seed_val) {
+      write(initial_pipe[1], &seed_val, sizeof(int));
     }
-    close(p[1]);
-    wait(0);
+    close(initial_pipe[1]);
+    wait((int *)0);
     exit(0);
   }
 }

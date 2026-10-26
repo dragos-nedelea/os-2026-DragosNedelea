@@ -2,35 +2,37 @@
 #include "kernel/stat.h"
 #include "user/user.h"
 
-char *typename(int t){
-  switch(t){
-  case T_DIR:
-    return "directory";
-  case T_FILE:
-    return "file";
-  case T_DEVICE:
-    return "device";
-  default:
-    return "?";
-  }
+static const char*
+resolve_type_label(short ftype)
+{
+  if (ftype == T_DIR) return "dir";
+  if (ftype == T_FILE) return "file";
+  if (ftype == T_DEVICE) return "device";
+  return "unknown";
 }
 
 int
 main(int argc, char *argv[])
 {
-  struct stat st;
-  if(argc < 2){
-    fprintf(2, "usage: mystat <file1> [file2 ...]\n");
+  if (argc <= 1) {
+    fprintf(2, "Usage: mystat <file_or_dir_path> ...\n");
     exit(1);
   }
 
-  for(int i = 1; i < argc; i++){
-    if(stat(argv[i], &st) < 0){
-      fprintf(2, "mystat: cannot stat %s\n", argv[i]);
+  struct stat meta;
+  for (int path_idx = 1; path_idx < argc; ++path_idx) {
+    char *target_path = argv[path_idx];
+    if (stat(target_path, &meta) < 0) {
+      fprintf(2, "mystat error: cannot stat target '%s'\n", target_path);
       continue;
     }
     printf("%s: %s, inode %d, links %d, size %d bytes\n",
-           argv[i], typename(st.type), st.ino, st.nlink, (int)st.size);
+           target_path,
+           resolve_type_label(meta.type),
+           meta.ino,
+           meta.nlink,
+           (int)meta.size);
   }
+
   exit(0);
 }
